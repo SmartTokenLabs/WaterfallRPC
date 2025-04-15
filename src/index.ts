@@ -1,4 +1,4 @@
-import { WaterfallFallbackProvider } from './universalRPC';
+import { WaterfallRpc } from './waterfallRpc';
 
-export { WaterfallFallbackProvider };
-export default WaterfallFallbackProvider; 
+export { WaterfallRpc };
+export default WaterfallRpc; 

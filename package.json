@@ -4,6 +4,9 @@
   "description": "A universal RPC provider with waterfall fallback mechanism for Ethereum networks",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist"
   ],

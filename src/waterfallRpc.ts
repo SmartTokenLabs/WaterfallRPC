@@ -1,5 +1,5 @@
 //UniversalRPC will load all the rpcs from https://chainlist.org/rpcs.json, it will store them in a JSON together with the storage date
-//WaterfallFallbackProvider will provide a method to get a working provider for a given chainId
+//WaterfallRpc will provide a method to get a working provider for a given chainId
 
 import { ethers, PerformActionRequest } from 'ethers';
 import fs from 'fs';
@@ -116,7 +116,7 @@ class UniversalRPC {
     }
 }
 
-export class WaterfallFallbackProvider extends ethers.JsonRpcProvider {
+export class WaterfallRpc extends ethers.JsonRpcProvider {
     private providers: Array<ethers.JsonRpcProvider>;
 
     private constructor(chainId: number, rpcManager: UniversalRPC) {
@@ -138,9 +138,9 @@ export class WaterfallFallbackProvider extends ethers.JsonRpcProvider {
         );
     }
 
-    public static async create(chainId: number): Promise<WaterfallFallbackProvider> {
+    public static async create(chainId: number): Promise<WaterfallRpc> {
         const rpcManager = await UniversalRPC.getInstance();
-        const instance = new WaterfallFallbackProvider(chainId, rpcManager);
+        const instance = new WaterfallRpc(chainId, rpcManager);
         const { workingProviders, workingUrls } = await instance.checkProviders();
         instance.providers = workingProviders;
         await rpcManager.updateWorkingProviders(chainId, workingUrls);
