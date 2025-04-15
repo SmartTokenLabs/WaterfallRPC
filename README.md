@@ -19,10 +19,10 @@ npm install waterfall-rpc
 ## Usage
 
 ```typescript
-import { WaterfallFallbackProvider } from 'waterfall-rpc';
+import { WaterfallRpc } from 'waterfall-rpc';
 
 // Create a provider for Base Sepolia
-const provider = await WaterfallFallbackProvider.create(84532);
+const provider = await WaterfallRpc.create(84532);
 
 // Use the provider with ethers.js
 const blockNumber = await provider.getBlockNumber();
@@ -31,13 +31,13 @@ console.log(`Current block number: ${blockNumber}`);
 
 ## API Documentation
 
-### WaterfallFallbackProvider
+### WaterfallRpc
 
 The main class that provides a reliable RPC connection with fallback support.
 
 #### Static Methods
 
-- `create(chainId: number): Promise<WaterfallFallbackProvider>`
+- `create(chainId: number): Promise<WaterfallRpc>`
   - Creates a new provider instance for the specified chain ID
   - Automatically checks and filters working RPC endpoints
 
