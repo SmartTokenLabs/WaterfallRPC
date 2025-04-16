@@ -63,6 +63,8 @@ console.log(`Current block number: ${blockNumber}`);
 
 ### Custom Progress Display
 
+Note: Only shown when the library runs for the first time (per chain). This validates the RPCs given in chainlist.org as some have gone dark.
+
 ```typescript
 import { WaterfallRpc, ProgressCallback } from '@smarttokenlabs/waterfall-rpc';
 
