@@ -1,5 +1,7 @@
 # Waterfall RPC
 
+[![npm version](https://badge.fury.io/js/%40smarttokenlabs%2Fwaterfall-rpc.svg)](https://badge.fury.io/js/%40smarttokenlabs%2Fwaterfall-rpc)
+
 A universal RPC provider with waterfall fallback mechanism for Ethereum networks. This library automatically fetches and manages RPC endpoints from Chainlist, providing a reliable way to interact with various Ethereum networks.
 
 ## Features
