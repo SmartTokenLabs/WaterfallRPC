@@ -269,11 +269,7 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
                     await new Promise(resolve => setTimeout(resolve, 5000));
                 }
 
-                const response = await provider._perform(req);
-                // is response code 200?
-                if (response.status/100 === 2) {
-                    return response;
-                }
+                return await provider._perform(req);
             } catch (e: any) {
                 if (e?.code === 'CALL_EXCEPTION') {
                     throw e;
