@@ -6,6 +6,8 @@ A universal RPC provider with waterfall fallback mechanism for Ethereum networks
 
 ## Features
 
+- Compatibility with EthersJS and Viem
+- Can be used for web based wallets
 - Automatically fetches and caches RPC endpoints from Chainlist
 - Implements a waterfall fallback mechanism for reliable RPC access
 - Supports all Ethereum networks listed on Chainlist
@@ -21,6 +23,8 @@ npm install @smarttokenlabs/waterfall-rpc
 ```
 
 ## Usage
+
+## EthersJS
 
 ### Basic Usage (with built-in progress display)
 
@@ -85,6 +89,17 @@ import { WaterfallRpc } from '@smarttokenlabs/waterfall-rpc';
 
 // Create a provider without progress display
 const provider = await WaterfallRpc.createProvider(84532, () => {});
+```
+
+## Viem
+
+```typescript
+import { createWaterfallPublicClient } from '@smarttokenlabs/waterfall-rpc/viem';
+import { mainnet } from 'viem/chains';
+const client = await createWaterfallPublicClient(mainnet, {
+  useWebCache: true, // in the browser, optional
+});
+const block = await client.getBlockNumber();
 ```
 
 ## API Documentation
