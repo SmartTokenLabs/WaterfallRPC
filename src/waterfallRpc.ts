@@ -11,6 +11,7 @@
 import { ethers, PerformActionRequest } from 'ethers';
 import { LocalStorageRpcStorage, MemoryRpcStorage, type RpcDataStorage } from './rpcCacheStorage';
 import type { ProgressEvent, RPCConfig, RPCData } from './rpcDataTypes';
+import { probeWorkingHttpsRpcUrls } from './rpcProbe';
 
 const OPK_RANKINGS_URL =
     'https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/opk-rankings.json';
@@ -60,6 +61,26 @@ function resolveRpcStorage(options?: WaterfallRpcOptions): RpcDataStorage {
 
 type ProgressCallback = (event: ProgressEvent) => void;
 
+/** Loads the RPC catalog for a chain, probes endpoints when needed, and returns working HTTPS URLs in ranked order. */
+export async function loadWorkingRpcUrlsForChain(
+    rpcManager: UniversalRpc,
+    chainId: number,
+    onProgress?: ProgressCallback
+): Promise<string[]> {
+    const rpcConfig = rpcManager.getRPC(chainId);
+    if (!rpcConfig) {
+        throw new Error(`No RPC configuration found for chainId ${chainId}`);
+    }
+    let urls = rpcConfig.rpcs.map((r) => r.url);
+    if (!rpcConfig.checked) {
+        urls = await probeWorkingHttpsRpcUrls(urls, onProgress);
+        if (urls.length < rpcConfig.rpcs.length) {
+            await rpcManager.updateWorkingProviders(chainId, urls);
+        }
+    }
+    return urls;
+}
+
 function defaultProgressDisplay(event: ProgressEvent): void {
     const percentage = (event.current / event.total) * 100;
     const barLength = 20;
@@ -82,7 +103,7 @@ function defaultProgressDisplay(event: ProgressEvent): void {
     }
 }
 
-class UniversalRpc {
+export class UniversalRpc {
     private readonly storage: RpcDataStorage;
     private readonly updateInterval: number = 7 * 24 * 60 * 60 * 1000; // update every week
     private cachedData: RPCData | null = null;
@@ -308,13 +329,8 @@ class UniversalRpc {
 export class WaterfallRpc extends ethers.JsonRpcProvider {
     private providers: Array<ethers.JsonRpcProvider>;
 
-    private constructor(chainId: number, rpcManager: UniversalRpc) {
-        const rpcConfig = rpcManager.getRPC(chainId);
-        if (!rpcConfig) {
-            throw new Error(`No RPC configuration found for chainId ${chainId}`);
-        }
-
-        super(rpcConfig.rpcs[0].url, chainId, {
+    private constructor(chainId: number, primaryUrl: string) {
+        super(primaryUrl, chainId, {
             batchMaxCount: 1,
             staticNetwork: true,
         });
@@ -328,22 +344,16 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
         options?: WaterfallRpcOptions
     ): Promise<WaterfallRpc> {
         const rpcManager = await UniversalRpc.getInstance(options);
-        const instance = new WaterfallRpc(chainId, rpcManager);
-        const rpcConfig = rpcManager.getRPC(chainId);
+        const urls = await loadWorkingRpcUrlsForChain(rpcManager, chainId, onProgress);
 
-        if (!rpcConfig) {
-            throw new Error(`No RPC configuration found for chainId ${chainId}`);
-        }
-
-        const providers = rpcConfig.rpcs.map(
-            (rpc) =>
-                new ethers.JsonRpcProvider(rpc.url, chainId, {
+        const instance = new WaterfallRpc(chainId, urls[0]);
+        instance.providers = urls.map(
+            (url) =>
+                new ethers.JsonRpcProvider(url, chainId, {
                     batchMaxCount: 1,
                     staticNetwork: true,
                 })
         );
-
-        instance.providers = await instance.setupProviders(chainId, rpcManager, rpcConfig, providers, onProgress);
         return instance;
     }
 
@@ -355,85 +365,6 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
         if (rpcManager.needUpdate(timeout)) {
             await rpcManager.downloadRpcs();
         }
-    }
-
-    // This function does have a potential side effect of updating the working providers in the UniversalRpc class
-    private async setupProviders(
-        chainId: number,
-        rpcManager: UniversalRpc,
-        rpcConfig: RPCConfig,
-        providers: Array<ethers.JsonRpcProvider>,
-        onProgress?: ProgressCallback
-    ): Promise<Array<ethers.JsonRpcProvider>> {
-        let workingProviders = providers;
-        let workingUrls: Array<string> = [];
-
-        if (!rpcConfig.checked) {
-            ({ workingProviders, workingUrls } = await this.checkProviders(providers, onProgress));
-            if (workingProviders.length < providers.length) {
-                await rpcManager.updateWorkingProviders(chainId, workingUrls);
-            }
-        }
-
-        return workingProviders;
-    }
-
-    private async checkProviders(
-        providers: Array<ethers.JsonRpcProvider>,
-        onProgress?: ProgressCallback
-    ): Promise<{ workingProviders: Array<ethers.JsonRpcProvider>; workingUrls: Array<string> }> {
-        const workingProviders: Array<ethers.JsonRpcProvider> = [];
-        const workingUrls: Array<string> = [];
-        const total = providers.length;
-
-        for (let i = 0; i < providers.length; i++) {
-            const provider = providers[i];
-            const url = (provider as unknown as { _getConnection: () => { url: string } })._getConnection().url;
-
-            if (onProgress) {
-                onProgress({
-                    current: i + 1,
-                    total,
-                    url,
-                    status: 'checking',
-                });
-            }
-
-            try {
-                const timeout = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Timeout after 5 seconds')), 5000)
-                );
-                const blockNumber = (await Promise.race([provider.getBlockNumber(), timeout])) as number;
-
-                if (blockNumber > 0) {
-                    workingProviders.push(provider);
-                    workingUrls.push(url);
-                    if (onProgress) {
-                        onProgress({
-                            current: i + 1,
-                            total,
-                            url,
-                            status: 'success',
-                        });
-                    }
-                }
-            } catch {
-                if (onProgress) {
-                    onProgress({
-                        current: i + 1,
-                        total,
-                        url,
-                        status: 'failed',
-                    });
-                }
-            }
-        }
-
-        if (workingProviders.length == 0) {
-            throw new Error('No working providers found');
-        }
-
-        return { workingProviders, workingUrls };
     }
 
     async _perform(req: PerformActionRequest): Promise<unknown> {

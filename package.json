@@ -4,6 +4,16 @@
   "description": "A universal RPC provider with waterfall fallback mechanism for Ethereum networks",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./viem": {
+      "types": "./dist/viem.d.ts",
+      "default": "./dist/viem.js"
+    }
+  },
   "browser": {
     "./dist/rpcCacheStorageNode.js": "./dist/rpcCacheStorageNode.stub.js"
   },
@@ -27,12 +37,21 @@
     "provider",
     "fallback",
     "ethers",
+    "viem",
     "web3"
   ],
   "author": "James Brown <j@smarttokenlabs.com>",
   "license": "MIT",
   "dependencies": {
     "ethers": "^6.13.5"
+  },
+  "peerDependencies": {
+    "viem": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "viem": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
@@ -42,6 +61,7 @@
     "eslint": "^8.56.0",
     "prettier": "^3.2.5",
     "typescript": "^5.8.3",
+    "viem": "^2.21.0",
     "vitest": "^3.0.0"
   }
 }

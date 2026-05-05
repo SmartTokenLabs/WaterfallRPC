@@ -1,0 +1,78 @@
+import {
+    BaseError,
+    createPublicClient,
+    custom,
+    http,
+    RpcRequestError,
+    type Chain,
+    type PublicClient,
+    type Transport,
+} from 'viem';
+import type { ProgressEvent } from './rpcDataTypes';
+import { loadWorkingRpcUrlsForChain, UniversalRpc, type WaterfallRpcOptions } from './waterfallRpc';
+
+export type WaterfallViemOptions = WaterfallRpcOptions & {
+    /** Progress when probing RPCs (same shape as `WaterfallRpc.createProvider`). */
+    onRpcProbeProgress?: (event: ProgressEvent) => void;
+};
+
+/** JSON-RPC execution/revert errors should not trigger RPC failover (matches ethers `CALL_EXCEPTION` behavior). */
+function shouldAbortFailover(error: unknown): boolean {
+    if (error instanceof RpcRequestError && error.code === 3) {
+        return true;
+    }
+    if (error instanceof BaseError) {
+        return (
+            error.walk((e) => e instanceof RpcRequestError && e.code === 3) != null
+        );
+    }
+    return false;
+}
+
+/**
+ * Viem transport using the same ranked RPC list and probe/cache behavior as `WaterfallRpc`,
+ * with randomized starting endpoint and delay between failover attempts.
+ */
+export async function createWaterfallTransport(
+    chain: Chain,
+    options?: WaterfallViemOptions
+): Promise<Transport> {
+    const rpcManager = await UniversalRpc.getInstance(options);
+    const urls = await loadWorkingRpcUrlsForChain(rpcManager, chain.id, options?.onRpcProbeProgress);
+
+    const factory = (params: Parameters<Transport>[0]) => {
+        const transports = urls.map((url) => http(url)(params));
+        return custom(
+            {
+                request: async (args) => {
+                    const errors: unknown[] = [];
+                    const startIndex = Math.floor(Math.random() * transports.length);
+                    for (let i = 0; i < transports.length; i++) {
+                        const sub = transports[(startIndex + i) % transports.length];
+                        try {
+                            if (errors.length > 0) {
+                                await new Promise((r) => setTimeout(r, 5000));
+                            }
+                            return await sub.request(args);
+                        } catch (e: unknown) {
+                            if (shouldAbortFailover(e)) throw e;
+                            errors.push(e);
+                        }
+                    }
+                    throw errors[0];
+                },
+            },
+            { key: 'waterfall', name: 'Waterfall JSON-RPC', retryCount: 0 }
+        )(params);
+    };
+
+    return factory as Transport;
+}
+
+export async function createWaterfallPublicClient(
+    chain: Chain,
+    options?: WaterfallViemOptions
+): Promise<PublicClient> {
+    const transport = await createWaterfallTransport(chain, options);
+    return createPublicClient({ chain, transport });
+}
