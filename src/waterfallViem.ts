@@ -16,14 +16,20 @@ export type WaterfallViemOptions = WaterfallRpcOptions & {
     onRpcProbeProgress?: (event: ProgressEvent) => void;
 };
 
-/** JSON-RPC execution/revert errors should not trigger RPC failover (matches ethers `CALL_EXCEPTION` behavior). */
+function hasSolidityRevertData(data: unknown): boolean {
+    return typeof data === 'string' && /^0x[0-9a-fA-F]{8,}$/.test(data);
+}
+
+/** JSON-RPC execution reverted (3) with concrete revert data: do not failover (real on-chain revert). */
 function shouldAbortFailover(error: unknown): boolean {
-    if (error instanceof RpcRequestError && error.code === 3) {
+    if (error instanceof RpcRequestError && error.code === 3 && hasSolidityRevertData(error.data)) {
         return true;
     }
     if (error instanceof BaseError) {
         return (
-            error.walk((e) => e instanceof RpcRequestError && e.code === 3) != null
+            error.walk(
+                (e) => e instanceof RpcRequestError && e.code === 3 && hasSolidityRevertData(e.data)
+            ) != null
         );
     }
     return false;
@@ -53,7 +59,9 @@ export async function createWaterfallTransport(
                             if (errors.length > 0) {
                                 await new Promise((r) => setTimeout(r, 5000));
                             }
-                            return await sub.request(args);
+                            const out = await sub.request(args);
+                            rpcManager.scheduleCatalogRefreshIfStale();
+                            return out;
                         } catch (e: unknown) {
                             if (shouldAbortFailover(e)) throw e;
                             errors.push(e);

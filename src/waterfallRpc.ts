@@ -8,7 +8,7 @@
 // `{ useWebCache: true }` or `{ storage: new LocalStorageRpcStorage() }`. Use the package
 // `browser` field so `fs` is not pulled into client bundles. Rankings + chainlist need CORS.
 
-import { ethers, PerformActionRequest } from 'ethers';
+import { ethers, isCallException, PerformActionRequest } from 'ethers';
 import { LocalStorageRpcStorage, MemoryRpcStorage, type RpcDataStorage } from './rpcCacheStorage';
 import type { ProgressEvent, RPCConfig, RPCData } from './rpcDataTypes';
 import { probeWorkingHttpsRpcUrls } from './rpcProbe';
@@ -61,6 +61,15 @@ function resolveRpcStorage(options?: WaterfallRpcOptions): RpcDataStorage {
 
 type ProgressCallback = (event: ProgressEvent) => void;
 
+/** True when ethers has a concrete revert payload (vs flaky nodes that surface `CALL_EXCEPTION` with no `data`). */
+function callExceptionHasRevertData(error: unknown): boolean {
+    if (!isCallException(error)) {
+        return false;
+    }
+    const data = (error as { data?: string | null }).data;
+    return typeof data === 'string' && /^0x[0-9a-fA-F]{8,}$/.test(data);
+}
+
 /** Loads the RPC catalog for a chain, probes endpoints when needed, and returns working HTTPS URLs in ranked order. */
 export async function loadWorkingRpcUrlsForChain(
     rpcManager: UniversalRpc,
@@ -107,6 +116,7 @@ export class UniversalRpc {
     private readonly storage: RpcDataStorage;
     private readonly updateInterval: number = 7 * 24 * 60 * 60 * 1000; // update every week
     private cachedData: RPCData | null = null;
+    private catalogDownloadInFlight: Promise<void> | null = null;
 
     private constructor(storage: RpcDataStorage) {
         this.storage = storage;
@@ -297,18 +307,39 @@ export class UniversalRpc {
         if (!this.storage.exists()) {
             return true;
         }
-        const raw = this.storage.read();
+        const raw = this.cachedData ?? this.storage.read();
         if (!raw?.date) {
             return true;
         }
-        return new Date().getTime() - new Date(raw.date).getTime() > updateInterval;
+        return Date.now() - new Date(raw.date).getTime() > updateInterval;
+    }
+
+    /**
+     * When the on-disk catalog is older than the interval, start a background download.
+     * Safe to call often (e.g. after each successful RPC); deduped and non-blocking.
+     */
+    public scheduleCatalogRefreshIfStale(): void {
+        if (!this.needUpdate(this.updateInterval)) {
+            return;
+        }
+        if (this.catalogDownloadInFlight) {
+            return;
+        }
+        this.catalogDownloadInFlight = this.downloadRpcs()
+            .catch((err) => {
+                console.error('WaterfallRpc: background RPC catalog refresh failed', err);
+            })
+            .finally(() => {
+                this.catalogDownloadInFlight = null;
+            });
     }
 
     private async init(): Promise<void> {
-        if (this.needUpdate(this.updateInterval)) {
-            await this.downloadRpcs();
-        } else {
+        if (this.storage.exists()) {
             this.loadRpcs();
+            this.scheduleCatalogRefreshIfStale();
+        } else {
+            await this.downloadRpcs();
         }
     }
 
@@ -328,13 +359,15 @@ export class UniversalRpc {
 
 export class WaterfallRpc extends ethers.JsonRpcProvider {
     private providers: Array<ethers.JsonRpcProvider>;
+    private readonly catalog: UniversalRpc;
 
-    private constructor(chainId: number, primaryUrl: string) {
+    private constructor(chainId: number, primaryUrl: string, catalog: UniversalRpc) {
         super(primaryUrl, chainId, {
             batchMaxCount: 1,
             staticNetwork: true,
         });
 
+        this.catalog = catalog;
         this.providers = [];
     }
 
@@ -346,7 +379,7 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
         const rpcManager = await UniversalRpc.getInstance(options);
         const urls = await loadWorkingRpcUrlsForChain(rpcManager, chainId, onProgress);
 
-        const instance = new WaterfallRpc(chainId, urls[0]);
+        const instance = new WaterfallRpc(chainId, urls[0], rpcManager);
         instance.providers = urls.map(
             (url) =>
                 new ethers.JsonRpcProvider(url, chainId, {
@@ -380,9 +413,11 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
                     await new Promise((resolve) => setTimeout(resolve, 5000));
                 }
 
-                return await provider._perform(req);
+                const result = await provider._perform(req);
+                this.catalog.scheduleCatalogRefreshIfStale();
+                return result;
             } catch (e: unknown) {
-                if (e && typeof e === 'object' && 'code' in e && (e as { code?: string }).code === 'CALL_EXCEPTION') {
+                if (isCallException(e) && callExceptionHasRevertData(e)) {
                     throw e;
                 }
                 errors.push(e);
