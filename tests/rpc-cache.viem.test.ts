@@ -52,3 +52,58 @@ describe('catalog cache (viem / createWaterfallTransport)', () => {
         expect(fetchMock).not.toHaveBeenCalled();
     });
 });
+
+const opkMainnetChain = defineChain({
+    id: 1,
+    name: 'Ethereum',
+    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+    rpcUrls: { default: { http: ['https://placeholder.invalid'] } },
+});
+
+describe('createWaterfallTransport: OPK chain skips rpc-rankings', () => {
+    let fetchMock: ReturnType<typeof vi.spyOn<typeof globalThis, 'fetch'>>;
+
+    beforeEach(() => {
+        fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
+            async (input: RequestInfo | URL, _init?: RequestInit) => {
+                const url =
+                    typeof input === 'string'
+                        ? input
+                        : input instanceof URL
+                          ? input.href
+                          : (input as Request).url;
+
+                if (url.includes('opk-rankings')) {
+                    return new Response(
+                        JSON.stringify({
+                            chains: [{ chainId: 1, rpcs: [{ url: 'https://opk.example/rpc' }] }],
+                        }),
+                        { status: 200 }
+                    );
+                }
+                if (url.includes('rpc-rankings')) {
+                    return new Response(
+                        JSON.stringify([{ chainId: 1, rpcs: [{ url: 'https://full.example/rpc' }] }]),
+                        { status: 200 }
+                    );
+                }
+                if (url.includes('chainlist.org')) {
+                    return new Response(JSON.stringify([]), { status: 200 });
+                }
+                return new Response('not found', { status: 404 });
+            }
+        );
+    });
+
+    afterEach(() => {
+        fetchMock.mockRestore();
+    });
+
+    it('does not request rpc-rankings when chain.id is in OPK set', async () => {
+        const storage = new MemoryRpcStorage();
+        await createWaterfallTransport(opkMainnetChain, { storage });
+
+        expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('rpc-rankings'))).toBe(false);
+        expect(storage.read()?.entries[1]?.rpcs?.[0]?.url).toBe('https://opk.example/rpc');
+    });
+});

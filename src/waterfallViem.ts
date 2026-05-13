@@ -9,7 +9,12 @@ import {
     type Transport,
 } from 'viem';
 import type { ProgressEvent } from './rpcDataTypes';
-import { loadWorkingRpcUrlsForChain, UniversalRpc, type WaterfallRpcOptions } from './waterfallRpc';
+import {
+    loadWorkingRpcUrlsForChain,
+    UniversalRpc,
+    WATERFALL_DEFAULT_RANKING_FEEDS,
+    type WaterfallRpcOptions,
+} from './waterfallRpc';
 
 export type WaterfallViemOptions = WaterfallRpcOptions & {
     /** Progress when probing RPCs (same shape as `WaterfallRpc.createProvider`). */
@@ -38,12 +43,19 @@ function shouldAbortFailover(error: unknown): boolean {
 /**
  * Viem transport using the same ranked RPC list and probe/cache behavior as `WaterfallRpc`,
  * with randomized starting endpoint and delay between failover attempts.
+ * Endpoints are merged from chainlist with calibrated rankings at
+ * {@link WATERFALL_DEFAULT_RANKING_FEEDS}. For OPK chains (see `catalogChainIdHint` in
+ * `WaterfallRpcOptions`), only the opk rankings file is downloaded.
  */
 export async function createWaterfallTransport(
     chain: Chain,
     options?: WaterfallViemOptions
 ): Promise<Transport> {
-    const rpcManager = await UniversalRpc.getInstance(options);
+    const rpcManager = await UniversalRpc.getInstance({
+        ...options,
+        rankingFeeds: { ...WATERFALL_DEFAULT_RANKING_FEEDS, ...options?.rankingFeeds },
+        catalogChainIdHint: chain.id,
+    });
     const urls = await loadWorkingRpcUrlsForChain(rpcManager, chain.id, options?.onRpcProbeProgress);
 
     const factory = (params: Parameters<Transport>[0]) => {

@@ -1,7 +1,9 @@
 // UniversalRPC loads RPC URLs from calibrated rankings (twice daily) when available:
 // - https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/opk-rankings.json (curated chain IDs)
 // - https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/rpc-rankings.json (all chains)
-// Falls back to https://chainlist.org/rpcs.json for metadata or when rankings are missing.
+// If those feeds yield at least one chain, the catalog is built from them only (no chainlist merge).
+// When `catalogChainIdHint` is an OPK chain id, only opk-rankings is downloaded (rpc-rankings skipped).
+// Otherwise fetches https://chainlist.org/rpcs.json for HTTPS RPC lists + chain metadata.
 // WaterfallRpc provides a working provider for a given chainId.
 //
 // Default cache: Node writes `.rpcdata` under cwd. For a browser wallet, pass
@@ -13,11 +15,11 @@ import { LocalStorageRpcStorage, MemoryRpcStorage, type RpcDataStorage } from '.
 import type { ProgressEvent, RPCConfig, RPCData } from './rpcDataTypes';
 import { probeWorkingHttpsRpcUrls } from './rpcProbe';
 
-const OPK_RANKINGS_URL =
-    'https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/opk-rankings.json';
-const RPC_RANKINGS_URL =
-    'https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/rpc-rankings.json';
-const CHAINLIST_RPC_URL = 'https://chainlist.org/rpcs.json';
+export const WATERFALL_DEFAULT_RANKING_FEEDS = {
+    opk: 'https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/opk-rankings.json',
+    rpc: 'https://pub-947f58bf7fb442f7a0d0686fcf757d76.r2.dev/rpc-rankings.json',
+    chainlist: 'https://chainlist.org/rpcs.json',
+} as const;
 
 /** Chains that use the smaller opk-rankings feed when it has data for that chain. */
 const OPK_CHAIN_IDS = new Set([1, 8453, 84532, 421613, 42161, 11155111]);
@@ -34,6 +36,17 @@ export type WaterfallRpcOptions = {
      * Omit on Node backends so the default remains the `.rpcdata` file.
      */
     useWebCache?: boolean;
+    /**
+     * Override URLs for calibrated rankings + chainlist merge. Defaults match
+     * {@link WATERFALL_DEFAULT_RANKING_FEEDS}.
+     */
+    rankingFeeds?: Partial<typeof WATERFALL_DEFAULT_RANKING_FEEDS>;
+    /**
+     * Chain you are loading the catalog for. When it is in the OPK set (see `rpc-rankings` / `opk-rankings`
+     * split in this module), only `opk-rankings.json` is fetched; `rpc-rankings.json` is omitted.
+     * Omit for a full multi-chain catalog (e.g. shared cache across many chain ids).
+     */
+    catalogChainIdHint?: number;
 };
 export {
     isBrowserLike,
@@ -57,6 +70,14 @@ function resolveRpcStorage(options?: WaterfallRpcOptions): RpcDataStorage {
     // eslint-disable-next-line @typescript-eslint/no-var-requires -- runtime-only `require` for Node; avoids bundling `fs` in browsers
     const { FilesystemRpcStorage } = require('./rpcCacheStorageNode') as typeof import('./rpcCacheStorageNode');
     return new FilesystemRpcStorage();
+}
+
+/** When the hinted chain uses the OPK feed exclusively, skip downloading the full rpc-rankings file. */
+function shouldFetchFullRpcRankings(catalogChainIdHint?: number): boolean {
+    if (catalogChainIdHint === undefined) {
+        return true;
+    }
+    return !OPK_CHAIN_IDS.has(catalogChainIdHint);
 }
 
 type ProgressCallback = (event: ProgressEvent) => void;
@@ -114,16 +135,26 @@ function defaultProgressDisplay(event: ProgressEvent): void {
 
 export class UniversalRpc {
     private readonly storage: RpcDataStorage;
+    private readonly rankingFeeds: typeof WATERFALL_DEFAULT_RANKING_FEEDS;
+    private readonly fetchFullRpcRankings: boolean;
     private readonly updateInterval: number = 7 * 24 * 60 * 60 * 1000; // update every week
     private cachedData: RPCData | null = null;
     private catalogDownloadInFlight: Promise<void> | null = null;
 
-    private constructor(storage: RpcDataStorage) {
+    private constructor(
+        storage: RpcDataStorage,
+        rankingFeeds: typeof WATERFALL_DEFAULT_RANKING_FEEDS,
+        fetchFullRpcRankings: boolean
+    ) {
         this.storage = storage;
+        this.rankingFeeds = rankingFeeds;
+        this.fetchFullRpcRankings = fetchFullRpcRankings;
     }
 
     public static async getInstance(options?: WaterfallRpcOptions): Promise<UniversalRpc> {
-        const instance = new UniversalRpc(resolveRpcStorage(options));
+        const feeds = { ...WATERFALL_DEFAULT_RANKING_FEEDS, ...options?.rankingFeeds };
+        const fetchFull = shouldFetchFullRpcRankings(options?.catalogChainIdHint);
+        const instance = new UniversalRpc(resolveRpcStorage(options), feeds, fetchFull);
         await instance.init();
         return instance;
     }
@@ -181,7 +212,7 @@ export class UniversalRpc {
 
     private async fetchOpkRankingsMap(): Promise<Map<number, { url: string }[]>> {
         try {
-            const response = await fetch(OPK_RANKINGS_URL);
+            const response = await fetch(this.rankingFeeds.opk);
             if (!response.ok) return new Map();
             return this.parseOpkRankingsPayload(await response.json());
         } catch {
@@ -191,7 +222,7 @@ export class UniversalRpc {
 
     private async fetchRpcRankingsMap(): Promise<Map<number, { url: string }[]>> {
         try {
-            const response = await fetch(RPC_RANKINGS_URL);
+            const response = await fetch(this.rankingFeeds.rpc);
             if (!response.ok) return new Map();
             return this.parseRpcRankingsPayload(await response.json());
         } catch {
@@ -216,6 +247,24 @@ export class UniversalRpc {
         return null;
     }
 
+    /**
+     * RPC list for a chain from ranking feeds: calibrated order when applicable, else raw opk/full
+     * (mirrors former chainlist merge + addRankingsOnly).
+     */
+    private rpcsFromRankingsMaps(
+        chainId: number,
+        opkMap: Map<number, { url: string }[]>,
+        fullMap: Map<number, { url: string }[]>
+    ): { url: string }[] | null {
+        const ranked = this.rankedRpcsForChain(chainId, opkMap, fullMap);
+        if (ranked && ranked.length > 0) return ranked;
+        const opk = opkMap.get(chainId);
+        if (opk && opk.length > 0) return opk;
+        const fromFull = fullMap.get(chainId);
+        if (fromFull && fromFull.length > 0) return fromFull;
+        return null;
+    }
+
     private minimalConfig(chainId: number, rpcs: { url: string }[]): RPCConfig {
         return {
             name: `Chain ${chainId}`,
@@ -228,49 +277,53 @@ export class UniversalRpc {
     }
 
     public async downloadRpcs(): Promise<void> {
-        const [opkMap, fullMap] = await Promise.all([
-            this.fetchOpkRankingsMap(),
-            this.fetchRpcRankingsMap(),
-        ]);
-
-        let chainlistPayload: unknown = null;
-        try {
-            const response = await fetch(CHAINLIST_RPC_URL);
-            if (response.ok) chainlistPayload = await response.json();
-        } catch {
-            chainlistPayload = null;
-        }
+        const [opkMap, fullMap] = this.fetchFullRpcRankings
+            ? await Promise.all([this.fetchOpkRankingsMap(), this.fetchRpcRankingsMap()])
+            : [await this.fetchOpkRankingsMap(), new Map<number, { url: string }[]>()];
 
         const storedData: RPCData = {
             entries: {},
             date: new Date().toISOString(),
         };
 
-        if (Array.isArray(chainlistPayload)) {
-            for (const rpc of chainlistPayload) {
-                if (!rpc || typeof rpc.chainId !== 'number' || !Array.isArray(rpc.rpc)) continue;
-                const chainId = rpc.chainId;
-                const httpsRpcs = (rpc.rpc as { url?: string }[])
-                    .filter((r) => r.url?.startsWith('https://'))
-                    .map((r) => ({ url: r.url as string }));
-                const ranked = this.rankedRpcsForChain(chainId, opkMap, fullMap);
-                storedData.entries[chainId] = {
-                    name: rpc.name,
-                    chainId,
-                    chainSlug: rpc.chainSlug,
-                    nativeCurrency: rpc.nativeCurrency,
-                    checked: false,
-                    rpcs: ranked && ranked.length > 0 ? ranked : httpsRpcs,
-                };
+        const chainIds = new Set<number>();
+        for (const id of opkMap.keys()) chainIds.add(id);
+        for (const id of fullMap.keys()) chainIds.add(id);
+
+        for (const chainId of chainIds) {
+            const rpcs = this.rpcsFromRankingsMaps(chainId, opkMap, fullMap);
+            if (rpcs && rpcs.length > 0) {
+                storedData.entries[chainId] = this.minimalConfig(chainId, rpcs);
             }
         }
 
-        const addRankingsOnly = (chainId: number, rpcs: { url: string }[]) => {
-            if (rpcs.length === 0 || storedData.entries[chainId]) return;
-            storedData.entries[chainId] = this.minimalConfig(chainId, rpcs);
-        };
-        for (const [cid, rpcs] of opkMap) addRankingsOnly(cid, rpcs);
-        for (const [cid, rpcs] of fullMap) addRankingsOnly(cid, rpcs);
+        if (Object.keys(storedData.entries).length === 0) {
+            let chainlistPayload: unknown = null;
+            try {
+                const response = await fetch(this.rankingFeeds.chainlist);
+                if (response.ok) chainlistPayload = await response.json();
+            } catch {
+                chainlistPayload = null;
+            }
+
+            if (Array.isArray(chainlistPayload)) {
+                for (const rpc of chainlistPayload) {
+                    if (!rpc || typeof rpc.chainId !== 'number' || !Array.isArray(rpc.rpc)) continue;
+                    const chainId = rpc.chainId;
+                    const httpsRpcs = (rpc.rpc as { url?: string }[])
+                        .filter((r) => r.url?.startsWith('https://'))
+                        .map((r) => ({ url: r.url as string }));
+                    storedData.entries[chainId] = {
+                        name: rpc.name,
+                        chainId,
+                        chainSlug: rpc.chainSlug,
+                        nativeCurrency: rpc.nativeCurrency,
+                        checked: false,
+                        rpcs: httpsRpcs,
+                    };
+                }
+            }
+        }
 
         if (Object.keys(storedData.entries).length === 0) {
             const err = new Error('Could not load RPC data from rankings or chainlist');
@@ -376,7 +429,7 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
         onProgress: ProgressCallback = defaultProgressDisplay,
         options?: WaterfallRpcOptions
     ): Promise<WaterfallRpc> {
-        const rpcManager = await UniversalRpc.getInstance(options);
+        const rpcManager = await UniversalRpc.getInstance({ ...options, catalogChainIdHint: chainId });
         const urls = await loadWorkingRpcUrlsForChain(rpcManager, chainId, onProgress);
 
         const instance = new WaterfallRpc(chainId, urls[0], rpcManager);
