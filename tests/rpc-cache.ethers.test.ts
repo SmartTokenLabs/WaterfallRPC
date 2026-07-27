@@ -49,7 +49,7 @@ describe('catalog from rankings only (no chainlist merge)', () => {
 
     beforeEach(() => {
         fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
-            async (input: RequestInfo | URL, _init?: RequestInit) => {
+            async (input: RequestInfo | URL) => {
                 const url =
                     typeof input === 'string'
                         ? input
@@ -94,7 +94,7 @@ describe('OPK catalog chain: skip rpc-rankings download', () => {
 
     beforeEach(() => {
         fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
-            async (input: RequestInfo | URL, _init?: RequestInit) => {
+            async (input: RequestInfo | URL) => {
                 const url =
                     typeof input === 'string'
                         ? input

@@ -14,7 +14,7 @@ export const CHAINLIST_PAYLOAD = [
 
 /** Mocks opk / rpc-rankings / chainlist fetches only (rankings + catalog). */
 export function installCatalogFetchMock(): ReturnType<typeof vi.spyOn<typeof globalThis, 'fetch'>> {
-    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, _init?: RequestInit) => {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
         const url =
             typeof input === 'string'
                 ? input

@@ -1,6 +1,6 @@
 {
   "name": "@smarttokenlabs/waterfall-rpc",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "description": "A universal RPC provider with waterfall fallback mechanism for Ethereum networks",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -43,7 +43,7 @@
   "author": "James Brown <j@smarttokenlabs.com>",
   "license": "MIT",
   "dependencies": {
-    "ethers": "^6.13.5"
+    "ethers": "^6.17.0"
   },
   "peerDependencies": {
     "viem": ">=2.0.0"
@@ -61,7 +61,10 @@
     "eslint": "^8.56.0",
     "prettier": "^3.2.5",
     "typescript": "^5.8.3",
-    "viem": "^2.48.8",
-    "vitest": "^3.0.0"
+    "viem": "^2.55.10",
+    "vitest": "^3.2.7"
+  },
+  "overrides": {
+    "brace-expansion": "5.0.8"
   }
 }

@@ -65,7 +65,7 @@ describe('createWaterfallTransport: OPK chain skips rpc-rankings', () => {
 
     beforeEach(() => {
         fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(
-            async (input: RequestInfo | URL, _init?: RequestInit) => {
+            async (input: RequestInfo | URL) => {
                 const url =
                     typeof input === 'string'
                         ? input
