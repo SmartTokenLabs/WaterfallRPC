@@ -11,6 +11,7 @@ import {
 import type { ProgressEvent } from './rpcDataTypes';
 import {
     loadWorkingRpcUrlsForChain,
+    resolveBlockedRpcStore,
     UniversalRpc,
     WATERFALL_DEFAULT_RANKING_FEEDS,
     type WaterfallRpcOptions,
@@ -51,12 +52,15 @@ export async function createWaterfallTransport(
     chain: Chain,
     options?: WaterfallViemOptions
 ): Promise<Transport> {
+    const blockedRpcs = resolveBlockedRpcStore(options);
     const rpcManager = await UniversalRpc.getInstance({
         ...options,
         rankingFeeds: { ...WATERFALL_DEFAULT_RANKING_FEEDS, ...options?.rankingFeeds },
         catalogChainIdHint: chain.id,
     });
-    const urls = await loadWorkingRpcUrlsForChain(rpcManager, chain.id, options?.onRpcProbeProgress);
+    const urls = blockedRpcs.filterBlocked(
+        await loadWorkingRpcUrlsForChain(rpcManager, chain.id, options?.onRpcProbeProgress)
+    );
 
     const factory = (params: Parameters<Transport>[0]) => {
         const transports = urls.map((url) => http(url)(params));
@@ -66,7 +70,12 @@ export async function createWaterfallTransport(
                     const errors: unknown[] = [];
                     const startIndex = Math.floor(Math.random() * transports.length);
                     for (let i = 0; i < transports.length; i++) {
-                        const sub = transports[(startIndex + i) % transports.length];
+                        const index = (startIndex + i) % transports.length;
+                        const url = urls[index];
+                        if (blockedRpcs.isBlocked(url)) {
+                            continue;
+                        }
+                        const sub = transports[index];
                         try {
                             if (errors.length > 0) {
                                 await new Promise((r) => setTimeout(r, 5000));
@@ -76,10 +85,11 @@ export async function createWaterfallTransport(
                             return out;
                         } catch (e: unknown) {
                             if (shouldAbortFailover(e)) throw e;
+                            blockedRpcs.recordFailureIfBlocked(url, e);
                             errors.push(e);
                         }
                     }
-                    throw errors[0];
+                    throw errors[0] ?? new Error('No working RPC providers available (all blocked or failed)');
                 },
             },
             { key: 'waterfall', name: 'Waterfall JSON-RPC', retryCount: 0 }

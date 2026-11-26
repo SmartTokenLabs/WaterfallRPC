@@ -5,7 +5,7 @@ import { defineChain } from 'viem';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRpcStorage } from '../src/waterfallRpc';
 import { createWaterfallTransport } from '../src/waterfallViem';
-import { installCatalogFetchMock, MOCK_CHAIN_ID } from './rpc-cache.fixtures';
+import { catalogFetchCalls, installCatalogFetchMock, MOCK_CHAIN_ID } from './rpc-cache.fixtures';
 
 vi.mock('../src/rpcProbe', () => ({
     probeWorkingHttpsRpcUrls: vi.fn(async (urls: string[]) => [...urls]),
@@ -44,12 +44,12 @@ describe('catalog cache (viem / createWaterfallTransport)', () => {
         const storage = new MemoryRpcStorage();
 
         await createWaterfallTransport(mockChain, { storage });
-        expect(fetchMock).toHaveBeenCalled();
+        expect(catalogFetchCalls(fetchMock).length).toBeGreaterThan(0);
         fetchMock.mockClear();
 
         await createWaterfallTransport(mockChain, { storage });
 
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(catalogFetchCalls(fetchMock)).toHaveLength(0);
     });
 });
 

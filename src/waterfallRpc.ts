@@ -11,6 +11,12 @@
 // `browser` field so `fs` is not pulled into client bundles. Rankings + chainlist need CORS.
 
 import { ethers, isCallException, PerformActionRequest } from 'ethers';
+import {
+    BlockedRpcStore,
+    LocalStorageRpcBlacklistStorage,
+    MemoryRpcBlacklistStorage,
+    type RpcBlacklistStorage,
+} from './rpcBlacklist';
 import { LocalStorageRpcStorage, MemoryRpcStorage, type RpcDataStorage } from './rpcCacheStorage';
 import type { ProgressEvent, RPCConfig, RPCData } from './rpcDataTypes';
 import { probeWorkingHttpsRpcUrls } from './rpcProbe';
@@ -31,6 +37,15 @@ export type WaterfallRpcOptions = {
      * For example `new LocalStorageRpcStorage()` or a custom IndexedDB adapter.
      */
     storage?: RpcDataStorage;
+    /**
+     * When set, used for the ISP/router blocked-RPC list (`.rpcblacklist` / localStorage).
+     * Overrides the blacklist half of `useWebCache`.
+     */
+    blacklistStorage?: RpcBlacklistStorage;
+    /**
+     * Shared blocked-RPC store (tests / advanced). When set, skips creating a new store.
+     */
+    blockedRpcStore?: BlockedRpcStore;
     /**
      * Browser / extension: use `localStorage` (with in-memory fallback if unavailable).
      * Omit on Node backends so the default remains the `.rpcdata` file.
@@ -54,6 +69,16 @@ export {
     MemoryRpcStorage,
     type RpcDataStorage,
 } from './rpcCacheStorage';
+export {
+    BlockedRpcStore,
+    LocalStorageRpcBlacklistStorage,
+    MemoryRpcBlacklistStorage,
+    extractBaseDomain,
+    extractHostname,
+    looksLikeRouterBlock,
+    type RpcBlacklistData,
+    type RpcBlacklistStorage,
+} from './rpcBlacklist';
 
 function resolveRpcStorage(options?: WaterfallRpcOptions): RpcDataStorage {
     if (options?.storage) {
@@ -70,6 +95,36 @@ function resolveRpcStorage(options?: WaterfallRpcOptions): RpcDataStorage {
     // eslint-disable-next-line @typescript-eslint/no-var-requires -- runtime-only `require` for Node; avoids bundling `fs` in browsers
     const { FilesystemRpcStorage } = require('./rpcCacheStorageNode') as typeof import('./rpcCacheStorageNode');
     return new FilesystemRpcStorage();
+}
+
+function resolveBlacklistStorage(options?: WaterfallRpcOptions): RpcBlacklistStorage {
+    if (options?.blacklistStorage) {
+        return options.blacklistStorage;
+    }
+    if (options?.useWebCache) {
+        try {
+            return new LocalStorageRpcBlacklistStorage();
+        } catch {
+            return new MemoryRpcBlacklistStorage();
+        }
+    }
+    // Custom catalog storage (tests / embedded): keep blacklist in-memory unless overridden.
+    if (options?.storage) {
+        return new MemoryRpcBlacklistStorage();
+    }
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- runtime-only `require` for Node; avoids bundling `fs` in browsers
+    const { FilesystemRpcBlacklistStorage } = require('./rpcCacheStorageNode') as typeof import('./rpcCacheStorageNode');
+    return new FilesystemRpcBlacklistStorage();
+}
+
+/** Resolve or create the ISP/router blocked-RPC store for these options. */
+export function resolveBlockedRpcStore(options?: WaterfallRpcOptions): BlockedRpcStore {
+    if (options?.blockedRpcStore) {
+        return options.blockedRpcStore;
+    }
+    const store = new BlockedRpcStore({ storage: resolveBlacklistStorage(options) });
+    store.warmExternalIp();
+    return store;
 }
 
 /** When the hinted chain uses the OPK feed exclusively, skip downloading the full rpc-rankings file. */
@@ -412,15 +467,23 @@ export class UniversalRpc {
 
 export class WaterfallRpc extends ethers.JsonRpcProvider {
     private providers: Array<ethers.JsonRpcProvider>;
+    private urls: string[] = [];
     private readonly catalog: UniversalRpc;
+    private readonly blockedRpcs: BlockedRpcStore;
 
-    private constructor(chainId: number, primaryUrl: string, catalog: UniversalRpc) {
+    private constructor(
+        chainId: number,
+        primaryUrl: string,
+        catalog: UniversalRpc,
+        blockedRpcs: BlockedRpcStore
+    ) {
         super(primaryUrl, chainId, {
             batchMaxCount: 1,
             staticNetwork: true,
         });
 
         this.catalog = catalog;
+        this.blockedRpcs = blockedRpcs;
         this.providers = [];
     }
 
@@ -429,10 +492,14 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
         onProgress: ProgressCallback = defaultProgressDisplay,
         options?: WaterfallRpcOptions
     ): Promise<WaterfallRpc> {
+        const blockedRpcs = resolveBlockedRpcStore(options);
         const rpcManager = await UniversalRpc.getInstance({ ...options, catalogChainIdHint: chainId });
-        const urls = await loadWorkingRpcUrlsForChain(rpcManager, chainId, onProgress);
+        const urls = blockedRpcs.filterBlocked(
+            await loadWorkingRpcUrlsForChain(rpcManager, chainId, onProgress)
+        );
 
-        const instance = new WaterfallRpc(chainId, urls[0], rpcManager);
+        const instance = new WaterfallRpc(chainId, urls[0], rpcManager, blockedRpcs);
+        instance.urls = urls;
         instance.providers = urls.map(
             (url) =>
                 new ethers.JsonRpcProvider(url, chainId, {
@@ -460,7 +527,12 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
         const startIndex = Math.floor(Math.random() * this.providers.length);
 
         for (let i = 0; i < this.providers.length; i++) {
-            const provider = this.providers[(startIndex + i) % this.providers.length];
+            const index = (startIndex + i) % this.providers.length;
+            const url = this.urls[index];
+            if (url && this.blockedRpcs.isBlocked(url)) {
+                continue;
+            }
+            const provider = this.providers[index];
             try {
                 if (errors.length > 0) {
                     await new Promise((resolve) => setTimeout(resolve, 5000));
@@ -473,11 +545,14 @@ export class WaterfallRpc extends ethers.JsonRpcProvider {
                 if (isCallException(e) && callExceptionHasRevertData(e)) {
                     throw e;
                 }
+                if (url) {
+                    this.blockedRpcs.recordFailureIfBlocked(url, e);
+                }
                 errors.push(e);
             }
         }
 
-        throw errors[0];
+        throw errors[0] ?? new Error('No working RPC providers available (all blocked or failed)');
     }
 }
 

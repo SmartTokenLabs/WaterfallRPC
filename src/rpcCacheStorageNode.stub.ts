@@ -1,4 +1,5 @@
 import type { RpcDataStorage } from './rpcCacheStorage';
+import type { RpcBlacklistData, RpcBlacklistStorage } from './rpcBlacklist';
 import type { RPCData } from './rpcDataTypes';
 
 /**
@@ -19,6 +20,26 @@ export class FilesystemRpcStorage implements RpcDataStorage {
     }
 
     write(data: RPCData): void {
+        void data;
+    }
+}
+
+export class FilesystemRpcBlacklistStorage implements RpcBlacklistStorage {
+    constructor() {
+        throw new Error(
+            '@smarttokenlabs/waterfall-rpc: FilesystemRpcBlacklistStorage is not for browser runtimes'
+        );
+    }
+
+    exists(): boolean {
+        return false;
+    }
+
+    read(): RpcBlacklistData | null {
+        return null;
+    }
+
+    write(data: RpcBlacklistData): void {
         void data;
     }
 }

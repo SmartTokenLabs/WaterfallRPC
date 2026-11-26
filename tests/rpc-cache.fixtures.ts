@@ -22,6 +22,9 @@ export function installCatalogFetchMock(): ReturnType<typeof vi.spyOn<typeof glo
                   ? input.href
                   : (input as Request).url;
 
+        if (url.includes('api.ipify.org')) {
+            return new Response('203.0.113.10', { status: 200 });
+        }
         if (url.includes('opk-rankings')) {
             return new Response(JSON.stringify({ chains: [] }), { status: 200 });
         }
@@ -33,4 +36,11 @@ export function installCatalogFetchMock(): ReturnType<typeof vi.spyOn<typeof glo
         }
         return new Response('not found', { status: 404 });
     });
+}
+
+/** Catalog ranking / chainlist fetches only (excludes external-IP warm-up). */
+export function catalogFetchCalls(
+    fetchMock: ReturnType<typeof vi.spyOn<typeof globalThis, 'fetch'>>
+): unknown[][] {
+    return fetchMock.mock.calls.filter((c) => !String(c[0]).includes('api.ipify.org'));
 }

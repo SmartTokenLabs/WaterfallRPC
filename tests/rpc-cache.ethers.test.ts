@@ -3,7 +3,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRpcStorage, WaterfallRpc } from '../src/waterfallRpc';
-import { CHAINLIST_PAYLOAD, installCatalogFetchMock, MOCK_CHAIN_ID } from './rpc-cache.fixtures';
+import {
+    catalogFetchCalls,
+    CHAINLIST_PAYLOAD,
+    installCatalogFetchMock,
+    MOCK_CHAIN_ID,
+} from './rpc-cache.fixtures';
 
 vi.mock('../src/rpcProbe', () => ({
     probeWorkingHttpsRpcUrls: vi.fn(async (urls: string[]) => [...urls]),
@@ -35,12 +40,12 @@ describe('catalog cache (ethers / WaterfallRpc)', () => {
         const storage = new MemoryRpcStorage();
 
         await WaterfallRpc.createProvider(MOCK_CHAIN_ID, () => undefined, { storage });
-        expect(fetchMock).toHaveBeenCalled();
+        expect(catalogFetchCalls(fetchMock).length).toBeGreaterThan(0);
         fetchMock.mockClear();
 
         await WaterfallRpc.createProvider(MOCK_CHAIN_ID, () => undefined, { storage });
 
-        expect(fetchMock).not.toHaveBeenCalled();
+        expect(catalogFetchCalls(fetchMock)).toHaveLength(0);
     });
 });
 
